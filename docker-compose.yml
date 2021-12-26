@@ -1,0 +1,59 @@
+version: '3.5'
+
+services:
+    phpc:
+        build:
+            context: .
+            dockerfile: Dockerfile
+        working_dir: /app
+        volumes:
+            - ./:/app
+#            - ${SSH_AUTH_SOCK}:/ssh-agent
+#        environment:
+#            - SSH_AUTH_SOCK=/ssh-agent
+        depends_on:
+            - postgresc
+            - mysqlc
+
+    postgresc:
+        image: postgres:14.1
+        environment:
+            POSTGRES_DB: my_db_name
+            POSTGRES_USER: my_user
+            POSTGRES_PASSWORD: my_pwd
+        #   PGDATA: /postgresql/data
+        volumes:
+            - ./pgsql.sql:/docker-entrypoint-initdb.d/pgsql.sql
+        ports:
+            - 54329:5432
+
+    mysqlc:
+        # Начиная с MySQL 8.0.19, смещения часовых поясов также поддерживаются для вставленных значений даты и времени
+        image: mysql:8.0.27
+        environment:
+            MYSQL_DATABASE: my_db_name
+            MYSQL_USER: my_user
+            MYSQL_PASSWORD: my_pwd
+            MYSQL_ROOT_PASSWORD: rootpass
+        volumes:
+          - ./mysql.sql:/docker-entrypoint-initdb.d/mysql.sql
+        ports:
+            - 33069:3306
+# https://hub.docker.com/r/tarantool/tarantool
+#    tarantoolc:
+#        image: tarantool/tarantool:2.8
+#        environment:
+#            TARANTOOL_USER_NAME: myusername
+#            TARANTOOL_USER_PASSWORD: mysecretpassword
+#        volumes:
+#            - ./tarantool.lua:/opt/tarantool/app.lua
+#        cmd: ["tarantool", "/opt/tarantool/app.lua"]
+#        ports:
+#            - 3301:3301
+# избавляемся от ошибки: ERROR: could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network
+networks:
+    default:
+        driver: bridge
+        ipam:
+            config:
+                - subnet: 172.16.57.0/24
