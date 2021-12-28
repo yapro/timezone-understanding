@@ -26,7 +26,9 @@ $postgres = new PDO('pgsql:host=postgresc;port=5432;dbname=my_db_name;user=my_us
 function insertDateTime(PDO $pdo, string $dateTime)
 {
     writeln('insertDateTime: ' . $dateTime);
-    $pdo->prepare("INSERT INTO my_table (my_date_time) VALUES (:my_date_time)")->execute(['my_date_time' => $dateTime]);
+    if (false === $pdo->prepare("INSERT INTO my_table (my_date_time) VALUES (:my_date_time)")->execute(['my_date_time' => $dateTime])) {
+        throw new UnexpectedValueException('Insert problems');
+    }
 }
 
 function dbWriteDateTime($dateTime)
@@ -78,6 +80,8 @@ function mysqlSetTimeZone(string $timeZone)
 function pgsqlSetTimeZone(string $timeZone)
 {
     global $postgres;
+// в pg документации написано надо так: $postgres->exec("SET TIME ZONE '".$timeZone."'"); но следующее тоже работает и
+// нравится тем, что указано слово сессия, что означает что изменение будет точно для сеанса, а не глобально:
     $postgres->exec("SET SESSION timezone TO '".$timeZone."'");
     writeln('Now timezone: ' . $postgres->query("SELECT current_setting('TIMEZONE')")->fetchColumn());
 }
@@ -210,48 +214,99 @@ mysqlUpdateTimeZone('+02:00');
 // Указание DBSTZ никак не влияет на DateTime при SELECT (DateTime возвратился для UTC - это плохо):
 writeln('getDateTime: ' . check('2020-01-01 11:10:10', dbGetLastDateTime($mysql)));
 writeln('');
-// MySQL итог: разочарование
+// MySQL итог: разочарование (возможно в силу недопонимания)
 // Детали:
 // - https://dev.mysql.com/doc/refman/8.0/en/date-and-time-literals.html
 // - https://dev.mysql.com/doc/refman/8.0/en/time-zone-support.html#time-zone-installation
 
 
-/*
-writeln('Update DBSTZ to Asia/Kabul and get dateTime : ' . $dateTime . PHP_EOL . '-----------------');
-dbSessionTimeZone('Asia/Kabul');
-// убедимся, что pgsql ЗАПОМИНАЕТ таймзону, если dateTime вставлена в бд без таймзоны (по-умолчанию UTC)
-writeln('Postgres: ' . check('2021-12-21 16:22:12+04:30', dbGetLastDateTime($postgres)));
-// $dateTime (11:52:12) + Asia/Kabul (+04:30) = 16:22:12
+//----------------------------------------------------------------------------------------------------------------------
+
+writeln('PostgreSQL:');
+writeln('Insert DateTime without timezone: ' . PHP_EOL . '-----------------');
+// Изменение таймзоны в пхп (но не в бд) не влияет на сохранение даты времени в бд:
+date_default_timezone_set('Europe/Moscow');
+// Если DBSTZ:-1 и DateTime без таймзоны, то PostgreSQL считает, что DateTime c таймзоной -1:
+pgsqlSetTimeZone('-01:00');
+insertDateTime($postgres, '2020-01-01 10:10:10');
+pgsqlSetTimeZone('+00:00');
+writeln('getDateTime: ' . check('2020-01-01 09:10:10+00', dbGetLastDateTime($postgres)));
+writeln('');
+// Если DBSTZ:+1 и DateTime без таймзоны, то PostgreSQL считает, что DateTime c таймзоной +1:
+pgsqlSetTimeZone('+01:00');
+insertDateTime($postgres, '2020-01-01 10:10:10');
+pgsqlSetTimeZone('+00:00');
+writeln('getDateTime: ' . check('2020-01-01 11:10:10+00', dbGetLastDateTime($postgres)));
+writeln('');
+// Если DBSTZ:0 и DateTime без таймзоны, то PostgreSQL считает, что DateTime c таймзоной 0:
+pgsqlSetTimeZone('+00:00');
+insertDateTime($postgres, '2020-01-01 10:10:10');
+writeln('getDateTime: ' . check('2020-01-01 10:10:10+00', dbGetLastDateTime($postgres)));
+writeln('');
+// Итог: PostgreSQL сохраняет в UTC(+00)
+
+// Если DBSTZ отличное от 00, то возвращается DateTime с TZ противоположной DBSTZ, но временем согласно DBSTZ (это правильно)
+pgsqlSetTimeZone('+01:00');
+writeln('getDateTime: ' . check('2020-01-01 09:10:10-01', dbGetLastDateTime($postgres)));
+pgsqlSetTimeZone('-01:00');
+writeln('getDateTime: ' . check('2020-01-01 11:10:10+01', dbGetLastDateTime($postgres)));
+writeln('');
+// Итог: время правильное (согласно DBSTZ), а на таймзону просто не нужно смотреть (не понимаю, почему противоположно DBSTZ)
+
+writeln('Insert DateTime with timezone: ' . PHP_EOL . '-----------------');
+// Если DateTime вставлена с таймзоной, то MySQL приводит DateTime к таймзоне UTC:
+pgsqlSetTimeZone('+00:00');
+insertDateTime($postgres, '2020-01-01 10:10:10+01:00');
+// Мы видим, что PostgreSQL привел дату времени к UTC (это хорошо):
+writeln('getDateTime: ' . check('2020-01-01 09:10:10+00', dbGetLastDateTime($postgres)));
+writeln('');
+
+writeln('Different +01:00 and Africa/Tunis (+1)'.PHP_EOL.'--:');
+// выше мы вставили DateTime с TZ+1, сейчас читаем с DBSTZ+1, но получаем -2 часа времени (что за бред):
+pgsqlSetTimeZone('+01:00');
+writeln('getDateTime: ' . check('2020-01-01 08:10:10-01', dbGetLastDateTime($postgres)));
+// однако, если DBSTZ+01:00 задать названием, то дата возвращается правильно:
+pgsqlSetTimeZone('Africa/Tunis'); // это +01:00
+writeln('getDateTime: ' . check('2020-01-01 10:10:10+01', dbGetLastDateTime($postgres)));
+// в дополнение PgSQL подсказывает таймзону, которую мы сейчас используем
+writeln('');
+
+
+// Тест-кейс реальной жизни:
+writeln('Real life case 1'.PHP_EOL.'--:');
+// пользователь 1 (TZ:+1) создает запись
+pgsqlSetTimeZone('+01:00');
+insertDateTime($postgres, '2020-01-01 10:10:10+00');
+// пользователь 2 (TZ: 0) читает запись (dateTime должен показывать время TZ: 0)
+pgsqlSetTimeZone('+00:00');
+// тест успешен т.к. при вставке pgsql учел dateTime TZ
+writeln('getDateTime: ' . check('2020-01-01 10:10:10+00', dbGetLastDateTime($postgres)));
+// пользователь 3 (TZ:-1) читает запись (dateTime должен показывать время для TZ: -1)
+pgsqlSetTimeZone('-01:00');
+writeln('getDateTime: ' . check('2020-01-01 09:10:10-01', dbGetLastDateTime($postgres)));
+// итог: тест провален (т.к. getDateTime: 2020-01-01 11:10:10+01) - нужно использовать названия таймзон, а не часовые отступы
+writeln('');
+
+// может быть при вставке в dateTime должна содержаться TZ аналогичная DBSTZ, проверим:
+writeln('Real life case 2'.PHP_EOL.'--:');
+// пользователь 1 (TZ:+1) создает запись
+pgsqlSetTimeZone('+01:00');
+insertDateTime($postgres, '2020-01-01 10:10:10+01');
+// пользователь 2 (TZ: 0) читает запись (dateTime должен показывать время TZ: 0)
+pgsqlSetTimeZone('+00:00');
+writeln('getDateTime: ' . check('2020-01-01 09:10:10+00', dbGetLastDateTime($postgres)));
+// пользователь 3 (TZ:-1) читает запись (dateTime должен показывать время TZ: 0)
+pgsqlSetTimeZone('-01:00');
+// итог: тест провален (т.к. getDateTime: 2020-01-01 10:10:10+01)
+writeln('getDateTime: ' . check('2020-01-01 08:10:10+00', dbGetLastDateTime($postgres)));
+// однако, если DBSTZ-01:00 задать названием, то дата возвращается правильно:
+pgsqlSetTimeZone('Atlantic/Azores'); // это -01:00
+writeln('getDateTime: ' . check('2020-01-01 08:10:10-01', dbGetLastDateTime($postgres)));
+// в дополнение PgSQL подсказывает таймзону, которую мы сейчас используем
 writeln('');
 
 
 
-///////////// теперь проведем предыдущий эксперемент, но используя дату времени с указанием таймзоны ///////////////////
-
-// убедимся, что изменение DBSTZ влияет на сохранение даты времени в бд
-$dateTime = '2021-12-21 11:52:12+01';
-writeln('Insert dateTime: '.$dateTime.' with db-timezone Canada/Newfoundland (-03:30)' . PHP_EOL . '-----------------');
-dbSessionTimeZone('Canada/Newfoundland');
-dbWriteDateTime($dateTime);
-// убедимся, что MySQL возвращает dateTime с указанием таймзоны сеанса
-writeln('Postgres: ' . check('2021-12-21 07:22:12-03:30', dbGetLastDateTime($postgres)));
-writeln('');
-
-
-
-// убедимся, что при изменении DBSTZ, база возвращают дату времени конвертированную согласно таймзоне сеанса
-writeln('Update DBSTZ to Asia/Kabul and get dateTime : ' . $dateTime . PHP_EOL . '-----------------');
-dbSessionTimeZone('Asia/Kabul');
-// убедимся, что pgsql ЗАПОМИНАЕТ таймзону, если дата вставлена в бд без таймзоны (по-умолчанию UTC)
-writeln('Postgres: ' . check('2021-12-21 16:22:12+04:30', dbGetLastDateTime($postgres)));
-// $dateTime (11:52:12) + Asia/Kabul (+04:30) = 16:22:12
-writeln('');
-
-
-// убедимся, что изменение сессионой таймзоны в бд влияет на сохранение даты времени в бд
-writeln('Update timezone in DB and write dateTime: ' . PHP_EOL . '-----------------');
-writeln('');
-*/
-// пользователь создает запись с датой UTC
-// пользователь читает UTC-запись, которую мы должны перевести в таймзону пользователя (вычисленную на основе местоположения пользователя)
-// нужен тест доктрины
+// todo нужен тест доктрины
+// Asia/Kabul
+// Canada/Newfoundland
