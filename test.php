@@ -83,7 +83,7 @@ function pgsqlSetTimeZone(string $timeZone)
 // в pg документации написано надо так: $postgres->exec("SET TIME ZONE '".$timeZone."'"); но следующее тоже работает и
 // нравится тем, что указано слово сессия, что означает что изменение будет точно для сеанса, а не глобально:
     $postgres->exec("SET SESSION timezone TO '".$timeZone."'");
-    writeln('Now timezone: ' . $postgres->query("SELECT current_setting('TIMEZONE')")->fetchColumn());
+    writeln('Db timezone: ' . $postgres->query("SELECT current_setting('TIMEZONE')")->fetchColumn());
 }
 function dbSessionTimeZone(string $timeZone)
 {
@@ -95,7 +95,11 @@ function dbGetLastDateTime(PDO $pdo): string
     //writeln('timestamp: ' . $pdo->query('SELECT UNIX_TIMESTAMP(my_date_time) FROM my_table ORDER BY id DESC LIMIT 1')->fetchColumn());
     return $pdo->query('SELECT my_date_time FROM my_table ORDER BY id DESC LIMIT 1')->fetchColumn();
 }
-
+function switchPhpTimeZone(string $timeZone)
+{
+    date_default_timezone_set($timeZone);
+    writeln('PHP timezone: ' . date_default_timezone_get());
+}
 
 // печатаем текущие значения таймзон (дефолтные) для пхп и бд
 writeln('Session timezone:' . PHP_EOL . '-----------------');
@@ -122,12 +126,12 @@ writeln('');
 $previousTimezone = $expected;
 $expected = 'UTC';
 writeln('Test date_default_timezone_set('.$expected.'):' . PHP_EOL . '-----------------');
-date_default_timezone_set($expected);
+switchPhpTimeZone($expected);
 writeln('ini_get(date.timezone): ' . check($previousTimezone, ini_get('date.timezone')));
 writeln('date_default_timezone_get: ' . check($expected, date_default_timezone_get()));
 writeln('DateTime object timezone: ' . check($expected, (new DateTime())->format('e')));
 writeln('');
-// итог: вызов date_default_timezone_set(VALUE) изменил сессионное значение, но не изменил значение установленное
+// итог: вызов switchPhpTimeZone(VALUE) изменил сессионное значение, но не изменил значение установленное
 // вызовом ini_set(date.timezone, SOME_VALUE), но это не важно, важно что DateTime-объекты имеют ожидаемую таймзону
 
 
@@ -150,18 +154,18 @@ writeln('');
 writeln('Test to change PHP timezone for DateTime-object:' . PHP_EOL . '-----------------');
 
 // убедимся, что изменение PHP timezone не влияет на изменение таймзоны DateTime-объектов созданных до изменения PHP timezone
-date_default_timezone_set('Canada/Newfoundland');
+switchPhpTimeZone('Canada/Newfoundland');
 $dateTime = new DateTimeImmutable();
 $before = $dateTime->format(DATE_ATOM);
-date_default_timezone_set('Asia/Kolkata');
+switchPhpTimeZone('Asia/Kolkata');
 $after = $dateTime->format(DATE_ATOM);
 writeln('change timezone after create object: ' . check($before, $after));
 
 // убедимся, что изменение PHP date.timezone влияет на изменение таймзоны DateTime-объектов созданных после изменения PHP date.timezone
 writeln('change timezone and two objects:');
-date_default_timezone_set('Canada/Newfoundland');
+switchPhpTimeZone('Canada/Newfoundland');
 $before = new DateTimeImmutable();
-date_default_timezone_set('Africa/Algiers');
+switchPhpTimeZone('Africa/Algiers');
 $after = new DateTimeImmutable();
 // напечатаем результаты чтобы было понятней:
 writeln('before: ' . $before->format(DATE_ATOM));
@@ -180,7 +184,7 @@ writeln('');
 writeln('MySQL:');
 writeln('Insert DateTime without timezone: ' . PHP_EOL . '-----------------');
 // Изменение таймзоны в пхп (но не в бд) не влияет на сохранение даты времени в бд:
-date_default_timezone_set('Europe/Moscow');
+switchPhpTimeZone('Europe/Moscow');
 // Если DateTime вставлена без таймзоны, то MySQL НЕ запоминает таймзону (сохраняется оригинальное значение DateTime):
 mysqlUpdateTimeZone('+00:00');
 $dateTime = '2020-01-01 10:10:10';
@@ -225,7 +229,7 @@ writeln('');
 writeln('PostgreSQL:');
 writeln('Insert DateTime without timezone: ' . PHP_EOL . '-----------------');
 // Изменение таймзоны в пхп (но не в бд) не влияет на сохранение даты времени в бд:
-date_default_timezone_set('Europe/Moscow');
+switchPhpTimeZone('Europe/Moscow');
 // Если DBSTZ:-1 и DateTime без таймзоны, то PostgreSQL считает, что DateTime c таймзоной -1:
 pgsqlSetTimeZone('-01:00');
 insertDateTime($postgres, '2020-01-01 10:10:10');
@@ -273,7 +277,7 @@ writeln('');
 
 
 // Тест-кейс реальной жизни:
-writeln('Real life case 1'.PHP_EOL.'--:');
+writeln('Real life case 1:'.PHP_EOL.'--');
 // пользователь 1 (TZ:+1) создает запись
 pgsqlSetTimeZone('+01:00');
 insertDateTime($postgres, '2020-01-01 10:10:10+00');
@@ -288,7 +292,7 @@ writeln('getDateTime: ' . check('2020-01-01 09:10:10-01', dbGetLastDateTime($pos
 writeln('');
 
 // может быть при вставке в dateTime должна содержаться TZ аналогичная DBSTZ, проверим:
-writeln('Real life case 2'.PHP_EOL.'--:');
+writeln('Real life case 2:'.PHP_EOL.'--');
 // пользователь 1 (TZ:+1) создает запись
 pgsqlSetTimeZone('+01:00');
 insertDateTime($postgres, '2020-01-01 10:10:10+01');
@@ -306,6 +310,37 @@ writeln('getDateTime: ' . check('2020-01-01 08:10:10-01', dbGetLastDateTime($pos
 writeln('');
 
 
+//----------------------------------------------------------------------------------------------------------------------
+// хорошо, допустим мы выбрали PgSQL, мы знаем формат возвращаемого DateTime от PgSQL, проверим что с ним будет в PHP:
+$dateTimeString = '2020-01-01 10:10:10-01';
+writeln('PHP new DateTime('.$dateTimeString.') with timezone:' .  PHP_EOL . '-----------------');
+switchPhpTimeZone('UTC'); // это 00:00
+$dateTime = new DateTime($dateTimeString);
+writeln('DateTime: '. check('2020-01-01T10:10:10-01:00', $dateTime->format(DATE_ATOM)));
+writeln('DateTime zone: '. check('-01:00', $dateTime->format('e')));
+switchPhpTimeZone('Atlantic/Azores'); // это -01:00
+$dateTime = new DateTime($dateTimeString);
+writeln('DateTime: '. check('2020-01-01T10:10:10-01:00', $dateTime->format(DATE_ATOM)));
+writeln('DateTime zone: '. check('-01:00', $dateTime->format('e')));
+writeln('');
+// Если в строке даты есть информация о таймзоне, то:
+// 1. dateTime-объект обретает таймзону из этой строки
+// 2. dateTime-объект игнорирует таймзону сеанса
+// 3. dateTime-объект таймзона содержится не в виде полного именования, а виде отступа от UTC, например: '-01:00'
+
+$dateTimeString = '2020-01-01 10:10:10';
+writeln('PHP new DateTime('.$dateTimeString.') without timezone:' .  PHP_EOL . '-----------------');
+switchPhpTimeZone('UTC'); // это 00:00
+$dateTime = new DateTime($dateTimeString);
+writeln('DateTime: '. check('2020-01-01T10:10:10+00:00', $dateTime->format(DATE_ATOM)));
+writeln('DateTime zone: '. check('UTC', $dateTime->format('e')));
+switchPhpTimeZone('Atlantic/Azores'); // это -01:00
+$dateTime = new DateTime($dateTimeString);
+writeln('DateTime: '. check('2020-01-01T10:10:10-01:00', $dateTime->format(DATE_ATOM)));
+writeln('DateTime zone: '. check('Atlantic/Azores', $dateTime->format('e')));
+// Если в строке даты нет информация о таймзоне, то:
+// 1. dateTime-объект обретает таймзону из сеанса
+// 2. dateTime-объект таймзона содержится в виде полного именования, например: 'Atlantic/Azores'
 
 // todo нужен тест доктрины
 // Asia/Kabul
